@@ -1,0 +1,17 @@
+# Credenciales y notas locales (nunca subir)
+.env
+.env.*
+*.txt
+!requirements.txt
+*secret*
+*credential*
+*token*
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Sistema
+.DS_Store

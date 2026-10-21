@@ -1,0 +1,77 @@
+name: Deploy Titanic API to Azure Container Apps
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  RESOURCE_GROUP: rg-mlops-ean
+  ACR_SERVER: acrmiguelbelloean.azurecr.io
+  CONTAINERAPP_ENV: env-mi-proyecto
+  CONTAINERAPP_NAME: api-titanic
+  IMAGE_NAME: titanic-api
+  TARGET_PORT: 8000
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Login en Azure Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ACR_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Build y push de la imagen
+        run: |
+          docker build -t $ACR_SERVER/$IMAGE_NAME:${{ github.sha }} -t $ACR_SERVER/$IMAGE_NAME:latest .
+          docker push $ACR_SERVER/$IMAGE_NAME:${{ github.sha }}
+          docker push $ACR_SERVER/$IMAGE_NAME:latest
+
+      - name: Login en Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Instalar extensión de Container Apps
+        run: az extension add --name containerapp --upgrade --only-show-errors
+
+      - name: Crear o actualizar Container App
+        run: |
+          if az containerapp show --name $CONTAINERAPP_NAME --resource-group $RESOURCE_GROUP > /dev/null 2>&1; then
+            echo "Desplegando nueva versión"
+            az containerapp update \
+              --name $CONTAINERAPP_NAME \
+              --resource-group $RESOURCE_GROUP \
+              --image $ACR_SERVER/$IMAGE_NAME:${{ github.sha }} \
+              --set-env-vars \
+                DATABRICKS_URL="${{ secrets.DATABRICKS_URL }}" \
+                DATABRICKS_TOKEN="${{ secrets.DATABRICKS_TOKEN }}"
+          else
+            echo "Primer despliegue: creando la app"
+            az containerapp create \
+              --name $CONTAINERAPP_NAME \
+              --resource-group $RESOURCE_GROUP \
+              --environment $CONTAINERAPP_ENV \
+              --image $ACR_SERVER/$IMAGE_NAME:${{ github.sha }} \
+              --registry-server $ACR_SERVER \
+              --registry-username "${{ secrets.ACR_USERNAME }}" \
+              --registry-password "${{ secrets.ACR_PASSWORD }}" \
+              --target-port $TARGET_PORT \
+              --ingress external \
+              --min-replicas 1 \
+              --env-vars \
+                DATABRICKS_URL="${{ secrets.DATABRICKS_URL }}" \
+                DATABRICKS_TOKEN="${{ secrets.DATABRICKS_TOKEN }}"
+          fi
+
+      - name: Mostrar URL de la API
+        run: |
+          echo "API desplegada en:"
+          echo "https://$(az containerapp show --name $CONTAINERAPP_NAME --resource-group $RESOURCE_GROUP --query properties.configuration.ingress.fqdn -o tsv)"
