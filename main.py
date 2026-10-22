@@ -1,5 +1,7 @@
-# API FastAPI que recibe los datos de un estudiante y consulta el endpoint MLOPS_EAN de Databricks
+# API FastAPI que recibe los datos de un pasajero del Titanic y consulta el endpoint titanic_EAN de Databricks
 import os
+from typing import Literal
+
 import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,21 +11,44 @@ from pydantic import BaseModel, Field
 DATABRICKS_URL = os.getenv("DATABRICKS_URL")
 DATABRICKS_TOKEN = os.getenv("DATABRICKS_TOKEN")
 
-app = FastAPI(title="API MLOps EAN", description="Predicción de aprobación de estudiantes")
+# Codificación de Sex usada al entrenar.
+# AJUSTAR si en el notebook se usó otra (p. ej. LabelEncoder da female=0, male=1).
+SEX_MAP = {"male": 0, "female": 1}
 
-# Permite que el frontend (index.html) llame a la API desde otro dominio
+app = FastAPI(title="API Titanic EAN", description="Predicción de supervivencia de pasajeros del Titanic")
+
+# Permite que un frontend llame a la API desde otro dominio
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
-# Campos que espera el modelo (deben coincidir con la firma registrada en MLflow)
-class Estudiante(BaseModel):
-    horas_estudio: float = Field(..., ge=0, le=24)
-    horas_sueno: float = Field(..., ge=0, le=24)
-    asistencia: float = Field(..., ge=0, le=100)
-    promedio_previo: float = Field(..., ge=0, le=5)
-    indice_dedicacion: float = Field(..., ge=0)
-    en_riesgo: int = Field(..., ge=0, le=1)
-    destacado: int = Field(..., ge=0, le=1)
+# Entrada "amigable": el usuario envía texto y la API lo convierte a lo que espera el modelo
+class Pasajero(BaseModel):
+    pclass: Literal[1, 2, 3] = Field(..., description="Clase del boleto: 1, 2 o 3")
+    sex: Literal["male", "female"] = Field(..., description="Sexo: male o female")
+    age: float = Field(..., ge=0, le=100, description="Edad en años")
+    sibsp: int = Field(..., ge=0, le=10, description="Hermanos/cónyuges a bordo")
+    parch: int = Field(..., ge=0, le=10, description="Padres/hijos a bordo")
+    fare: float = Field(..., ge=0, description="Precio del boleto")
+    embarked: Literal["C", "Q", "S"] = Field(..., description="Puerto: C=Cherbourg, Q=Queenstown, S=Southampton")
+
+
+def a_features(p: Pasajero) -> dict:
+    # Mismo formato que la firma registrada en MLflow (8 columnas, Embarked en one-hot con C como base)
+    return {
+        "Pclass": p.pclass,
+        "Sex": SEX_MAP[p.sex],
+        "Age": float(p.age),
+        "SibSp": p.sibsp,
+        "Parch": p.parch,
+        "Fare": float(p.fare),
+        "Embarked_Q": 1 if p.embarked == "Q" else 0,
+        "Embarked_S": 1 if p.embarked == "S" else 0,
+    }
+
+
+@app.get("/")
+def root():
+    return {"mensaje": "API Titanic EAN activa", "docs": "/docs", "health": "/health"}
 
 
 @app.get("/health")
@@ -33,12 +58,12 @@ def health():
 
 
 @app.post("/predecir")
-def predecir(est: Estudiante):
+def predecir(p: Pasajero):
     if not (DATABRICKS_URL and DATABRICKS_TOKEN):
         raise HTTPException(status_code=500, detail="Faltan DATABRICKS_URL o DATABRICKS_TOKEN")
 
-    # Databricks exige el formato dataframe_records
-    payload = {"dataframe_records": [est.model_dump()]}
+    features = a_features(p)
+    payload = {"dataframe_records": [features]}
 
     try:
         r = requests.post(
@@ -53,9 +78,10 @@ def predecir(est: Estudiante):
     if r.status_code != 200:
         raise HTTPException(status_code=502, detail=f"Error de Databricks: {r.text}")
 
-    pred = int(r.json()["predictions"][0])  # 1 = aprueba, 0 = reprueba
+    pred = int(r.json()["predictions"][0])  # 1 = sobrevive, 0 = no sobrevive
     return {
         "prediccion": pred,
-        "resultado": "Aprueba ✅" if pred == 1 else "Reprueba ❌",
-        "datos_recibidos": est.model_dump(),
+        "resultado": "Sobrevive ✅" if pred == 1 else "No sobrevive ❌",
+        "datos_recibidos": p.model_dump(),
+        "features_enviadas": features,
     }
